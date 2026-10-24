@@ -11,6 +11,11 @@
   --color-line-strong: #cfcfd5;
   --color-ink: #121214;
   --color-muted: #6a6a72;
+  /* Hover darkens by one step. Lightening towards white reads as disabled,
+     or as a text input taking focus, rather than as a button under the
+     cursor. */
+  --color-hover: #ebebee;
+  --color-ink-hover: #2e2e33;
 
   --font-sans: "Archivo", ui-sans-serif, system-ui, -apple-system, sans-serif;
 
@@ -133,11 +138,25 @@ details[open] .chev {
   transform: scale(0.97);
 }
 
-/* Hover effects only where a real pointer exists. */
+/* Hover effects only where a real pointer exists.
+   One property moves, not two: a fill and a border changing together reads
+   as mush. The border stays put so the control keeps its shape. */
 @media (hover: hover) and (pointer: fine) {
   .hov:hover:not(:disabled) {
-    background: var(--color-raised);
+    background: var(--color-hover);
+  }
+  /* Dark controls cannot darken any further, so they lift instead. */
+  .hov-ink:hover:not(:disabled) {
+    background: var(--color-ink-hover);
+  }
+  /* Full-width clickable rows: disclosure headers. */
+  .hov-row:hover {
+    background: var(--color-hover);
+  }
+  /* The preview tiles carry their own picture, so the edge does the work. */
+  .hov-tile:hover:not([aria-checked="true"]) {
     border-color: var(--color-line-strong);
+    background: var(--color-hover);
   }
 }
 

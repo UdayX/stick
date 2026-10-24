@@ -284,7 +284,7 @@ export default function App() {
                       aria-checked={on}
                       onClick={() => setFinish(f.id)}
                       className={`press group rounded-lg border p-1.5 text-left ${
-                        on ? "border-ink" : "border-line hover:border-line-strong"
+                        on ? "border-ink" : "hov-tile border-line"
                       }`}
                     >
                       {swatches?.[f.id] ? (
@@ -324,7 +324,7 @@ export default function App() {
                       aria-checked={on}
                       onClick={() => set("shape")(sh.id)}
                       className={`press rounded-md py-1.5 text-[12px] ${
-                        on ? "bg-ink text-base" : "text-muted hover:text-ink"
+                        on ? "bg-ink text-base" : "hov text-muted hover:text-ink"
                       }`}
                     >
                       {sh.label}
@@ -408,7 +408,7 @@ export default function App() {
                 <label htmlFor="format" className="mb-1.5 block text-[13px]">File</label>
                 <select
                   id="format"
-                  className="press h-10 w-full rounded-lg border border-line bg-base px-3 text-[13px]"
+                  className="press hov h-10 w-full rounded-lg border border-line bg-raised px-3 text-[13px]"
                   value={format}
                   onChange={(e) => setFormat(e.currentTarget.value as Format)}
                 >
@@ -423,7 +423,7 @@ export default function App() {
                   <label htmlFor="dpi" className="mb-1.5 block text-[13px]">Resolution</label>
                   <select
                     id="dpi"
-                    className="press h-10 w-full rounded-lg border border-line bg-base px-3 text-[13px]"
+                    className="press hov h-10 w-full rounded-lg border border-line bg-raised px-3 text-[13px]"
                     value={dpi}
                     onChange={(e) => setDpi(Number(e.currentTarget.value))}
                   >

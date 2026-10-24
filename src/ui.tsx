@@ -34,7 +34,7 @@ export function Section({
 }) {
   return (
     <details open={defaultOpen} className="border-b border-line">
-      <summary className="flex items-center gap-2 px-6 py-4 select-none">
+      <summary className="hov-row flex items-center gap-2 px-6 py-4 transition-colors duration-150 select-none">
         <span className="chev text-muted">{Icons.chevron}</span>
         <span className="text-[13px] font-medium">{title}</span>
         {hint && <span className="ml-auto text-xs text-muted tnum">{hint}</span>}
@@ -125,14 +125,14 @@ export function Button({
 }) {
   const look =
     variant === "primary"
-      ? "bg-ink text-base border-ink"
-      : "bg-surface text-ink border-line";
+      ? "hov-ink bg-ink text-base border-ink"
+      : "hov bg-raised text-ink border-line";
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`press hov inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border px-3 text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-35 ${look} ${
+      className={`press inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border px-3 text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-35 ${look} ${
         full ? "w-full" : ""
       }`}
     >
