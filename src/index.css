@@ -2,14 +2,15 @@
 @import "tailwindcss";
 
 @theme {
-  /* Monochrome only. The stickers carry the colour; the tool does not. */
-  --color-base: #0a0a0a;
-  --color-surface: #121212;
-  --color-raised: #1a1a1a;
-  --color-line: #242424;
-  --color-line-strong: #343434;
-  --color-ink: #fafafa;
-  --color-muted: #8e8e8e;
+  /* Monochrome only. The stickers carry the colour; the tool does not.
+     Muted is #6a6a72 so it clears 4.5:1 on both the page and the panel. */
+  --color-base: #ffffff;
+  --color-surface: #f7f7f8;
+  --color-raised: #ffffff;
+  --color-line: #e7e7ea;
+  --color-line-strong: #cfcfd5;
+  --color-ink: #121214;
+  --color-muted: #6a6a72;
 
   --font-sans: "Archivo", ui-sans-serif, system-ui, -apple-system, sans-serif;
 
@@ -19,7 +20,7 @@
 }
 
 html {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 body {
@@ -158,8 +159,8 @@ details[open] .chev {
 /* The transparency grid, so clear film reads as actually clear. */
 .checker {
   background-image:
-    linear-gradient(45deg, #ffffff07 25%, transparent 25% 75%, #ffffff07 75%),
-    linear-gradient(45deg, #ffffff07 25%, transparent 25% 75%, #ffffff07 75%);
+    linear-gradient(45deg, #0000000a 25%, transparent 25% 75%, #0000000a 75%),
+    linear-gradient(45deg, #0000000a 25%, transparent 25% 75%, #0000000a 75%);
   background-size: 24px 24px;
   background-position: 0 0, 12px 12px;
 }

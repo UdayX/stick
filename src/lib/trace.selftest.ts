@@ -3,7 +3,7 @@
  * Fails loudly if offsetting, hole handling or speck removal regress.
  */
 import assert from "node:assert/strict";
-import { buildSdf, contourPath } from "./trace.ts";
+import { buildSdf, contourPath, roundField } from "./trace.ts";
 
 const W = 220;
 const H = 220;
@@ -73,3 +73,46 @@ assert.equal(
 );
 
 console.log("trace.selftest: solid-fill checks passed");
+
+// A traced circle must come out smooth. Faceting shows up as the radius
+// rippling in and out along the curve, so measure that rather than counting
+// corners: a coarse but round outline is fine, a scalloped one is not.
+{
+  const AA = 260;
+  const C = 130;
+  const R = 80;
+  const px = new Uint8ClampedArray(AA * AA * 4);
+  for (let y = 0; y < AA; y++) {
+    for (let x = 0; x < AA; x++) {
+      const cov = Math.max(0, Math.min(1, R - Math.hypot(x - C, y - C) + 0.5));
+      px[(y * AA + x) * 4 + 3] = Math.round(cov * 255);
+    }
+  }
+  const disc = roundField(buildSdf(px, AA, AA), 1);
+  const d = contourPath(disc, { offset: 8, tolerance: 0.3 });
+
+  // Walk the beziers and track how far the radius wanders.
+  const n = d.match(/-?\d+(\.\d+)?/g)!.map(Number);
+  let cur = { x: n[0], y: n[1] };
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 2; i + 5 < n.length; i += 6) {
+    const c1 = { x: n[i], y: n[i + 1] };
+    const c2 = { x: n[i + 2], y: n[i + 3] };
+    const p = { x: n[i + 4], y: n[i + 5] };
+    for (let s = 1; s <= 10; s++) {
+      const t = s / 10;
+      const u = 1 - t;
+      const x = u * u * u * cur.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * p.x;
+      const y = u * u * u * cur.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * p.y;
+      const r = Math.hypot(x - C, y - C);
+      if (r < lo) lo = r;
+      if (r > hi) hi = r;
+    }
+    cur = p;
+  }
+  assert.ok(hi - lo < 0.45, `circle outline is scalloped: radius ripples ${(hi - lo).toFixed(3)}px`);
+  near((hi + lo) / 2, R + 8, 0.6, "circle traced at the right radius");
+}
+
+console.log("trace.selftest: smoothness checks passed");

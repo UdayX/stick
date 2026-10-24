@@ -225,13 +225,21 @@ function area(loop: Loop): number {
   return Math.abs(a) / 2;
 }
 
-/** Closed Catmull-Rom through the points, emitted as cubic beziers. */
+/**
+ * Closed centripetal Catmull-Rom through the points, as cubic beziers.
+ *
+ * Centripetal (alpha 0.5) rather than uniform: the simplifier leaves points
+ * unevenly spaced, and uniform Catmull-Rom creases wherever the spacing
+ * changes, which shows up as a flat facet and a sharp corner on what should
+ * be a smooth curve. Weighting the knots by distance removes that.
+ */
 function loopToPath(loop: Loop, scale: number, ox: number, oy: number): string {
   const n = loop.length;
-  const f = (v: number) => Math.round(v * 100) / 100;
+  const f = (v: number) => Math.round(v * 1000) / 1000;
   const P = (i: number) => loop[((i % n) + n) % n];
   const sx = (p: Pt) => f(p.x * scale + ox);
   const sy = (p: Pt) => f(p.y * scale + oy);
+  const knot = (a: Pt, b: Pt) => Math.max(Math.sqrt(Math.hypot(b.x - a.x, b.y - a.y)), 1e-6);
 
   let d = `M${sx(P(0))} ${sy(P(0))}`;
   for (let i = 0; i < n; i++) {
@@ -239,8 +247,20 @@ function loopToPath(loop: Loop, scale: number, ox: number, oy: number): string {
     const p1 = P(i);
     const p2 = P(i + 1);
     const p3 = P(i + 2);
-    const c1 = { x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6 };
-    const c2 = { x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6 };
+    const d1 = knot(p0, p1);
+    const d2 = knot(p1, p2);
+    const d3 = knot(p2, p3);
+
+    const a1 = 3 * d1 * (d1 + d2);
+    const a2 = 3 * d3 * (d3 + d2);
+    const c1 = {
+      x: (d1 * d1 * p2.x - d2 * d2 * p0.x + (2 * d1 * d1 + 3 * d1 * d2 + d2 * d2) * p1.x) / a1,
+      y: (d1 * d1 * p2.y - d2 * d2 * p0.y + (2 * d1 * d1 + 3 * d1 * d2 + d2 * d2) * p1.y) / a1,
+    };
+    const c2 = {
+      x: (d3 * d3 * p1.x - d2 * d2 * p3.x + (2 * d3 * d3 + 3 * d3 * d2 + d2 * d2) * p2.x) / a2,
+      y: (d3 * d3 * p1.y - d2 * d2 * p3.y + (2 * d3 * d3 + 3 * d3 * d2 + d2 * d2) * p2.y) / a2,
+    };
     d += `C${sx(c1)} ${sy(c1)} ${sx(c2)} ${sy(c2)} ${sx(p2)} ${sy(p2)}`;
   }
   return d + "Z";
@@ -311,7 +331,7 @@ export type ContourOpts = {
  * the winding direction the tracer happened to produce.
  */
 export function contourPath(sdf: Sdf, opts: ContourOpts): string {
-  const { offset, tolerance = 0.6, minArea = 12, scale = 1, originX = 0, originY = 0 } = opts;
+  const { offset, tolerance = 0.25, minArea = 12, scale = 1, originX = 0, originY = 0 } = opts;
   let loops = stitch(isoSegments(sdf, offset)).filter((l) => area(l) >= minArea);
   if (!loops.length) return "";
   if (opts.solid) {

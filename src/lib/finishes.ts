@@ -212,6 +212,8 @@ const STEEL: [number, string][] = [
  */
 function sheen(ctx: RenderCtx, opacity: number) {
   const { ns, w, h, animate } = ctx;
+  // Scaled by intensity so turning the finish down actually turns it off.
+  const strength = opacity * ctx.intensity;
   const id = `${ns}-sheen`;
   const band = Math.max(w, h) * 0.42;
   const defs = gradientStops(id, 100, [
@@ -223,7 +225,7 @@ function sheen(ctx: RenderCtx, opacity: number) {
     : `<g transform="translate(${w * 0.34} 0)">${rect}</g>`;
   return {
     defs,
-    markup: `<g opacity="${opacity}"${ctx.flat ? "" : ' style="mix-blend-mode:screen"'}>${g}</g>`,
+    markup: `<g opacity="${strength.toFixed(3)}"${ctx.flat ? "" : ' style="mix-blend-mode:screen"'}>${g}</g>`,
     css: animate
       ? `@keyframes ${ns}-sweepk{0%{transform:translateX(0)}100%{transform:translateX(${(w + band * 1.4).toFixed(1)}px)}}` +
         `.${ns}-sweep{animation:${ns}-sweepk 4.2s cubic-bezier(.45,0,.55,1) infinite}` +

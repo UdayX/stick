@@ -150,7 +150,7 @@ export default function App() {
     <div className="flex min-h-dvh flex-col lg:h-dvh lg:flex-row-reverse lg:overflow-hidden">
       <aside className="w-full shrink-0 overflow-y-auto border-line bg-surface lg:w-[360px] lg:border-l">
         <header className="px-6 pt-8 pb-7">
-          <h1 className="text-[15px] font-semibold tracking-tight">Stickerforge</h1>
+          <h1 className="text-[15px] font-semibold tracking-[0.18em]">STICK</h1>
           <p className="mt-2 max-w-[30ch] text-[13px] leading-relaxed text-muted">
             Artwork in, die-cut sticker out. Print and web ready, no Illustrator.
           </p>
@@ -247,7 +247,7 @@ export default function App() {
                   label="Corner rounding"
                   value={spec.roundMm}
                   min={0}
-                  max={Math.max(1, Math.round(spec.widthMm / 4))}
+                  max={Math.max(1, Math.round(spec.widthMm / 6))}
                   step={0.25}
                   unit=" mm"
                   onChange={set("roundMm")}
@@ -373,7 +373,7 @@ export default function App() {
                   <path
                     d={web.cutPath}
                     fill="none"
-                    stroke="#fff"
+                    stroke="#ff00c8"
                     strokeWidth={web.widthMm * 0.005}
                     strokeDasharray={`${web.widthMm * 0.02} ${web.widthMm * 0.015}`}
                     fillRule="evenodd"

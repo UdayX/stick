@@ -7,7 +7,7 @@
  * SVG stays vector all the way to the export; the rasterisation here exists
  * only to trace geometry from.
  */
-import { buildSdf, sdfBounds, type Sdf } from "./trace.ts";
+import { buildSdf, roundField, sdfBounds, type Sdf } from "./trace.ts";
 
 /** Longest side of the artwork in the canvas geometry is traced from. */
 const WORK = 640;
@@ -231,7 +231,12 @@ export async function loadArtwork(file: File, keyTolerance = 26): Promise<Artwor
   // Key off the artwork's own corners, not the blank margin we just added.
   if (wasOpaque && source.kind === "raster") keyOutBackdrop(px.data, w, h, margin, aw, ah, keyTolerance);
 
-  const sdf = buildSdf(px.data, w, h);
+  // Distance is measured to the nearest opaque pixel centre, so the field
+  // inherits a pixel of stair-stepping from the raster and the outline comes
+  // out faintly scalloped. A one-pixel blur removes it: a distance field is
+  // locally planar, and blurring a plane returns the same plane, so the shape
+  // survives while the quantisation noise does not.
+  const sdf = roundField(buildSdf(px.data, w, h), 1);
   return {
     source,
     natW,

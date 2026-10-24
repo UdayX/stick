@@ -1,4 +1,4 @@
-# Stickerforge
+# STICK
 
 Drop in an SVG or PNG, get a die-cut sticker out — print ready and web ready,
 without opening Illustrator.

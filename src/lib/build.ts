@@ -109,12 +109,6 @@ export function buildSticker(art: Artwork, spec: StickerSpec, mode: "web" | "pri
   const flat = mode === "print";
   const b = art.bounds;
 
-  // Rounding the outline is a blur of the distance field: it pulls convex
-  // corners in and pushes concave ones out equally, the way offsetting out
-  // and back in again does, so the shape stays centred on the artwork.
-  const roundPx = spec.shape === "rounded" ? Math.max(1, spec.roundMm * 2) : 0;
-  const field: Sdf = roundPx > 0 ? roundField(art.sdf, roundPx) : art.sdf;
-
   const radial = spec.shape === "circle" ? radialExtent(art.sdf) : null;
   // What the sticker's width is measured across, before the border is added.
   const spanPx = radial ? radial.radius * 2 : b.w;
@@ -135,7 +129,16 @@ export function buildSticker(art: Artwork, spec: StickerSpec, mode: "web" | "pri
     ? `Border and bleed exceed what this artwork can carry (${Math.floor(maxOffsetMm * 10) / 10} mm at this size). Reduce them, or raise the sticker width.`
     : undefined;
 
-  const tol = 0.25 + spec.smoothing * 0.9;
+  // Simplification tolerance in traced pixels.
+  const tol = 0.12 + spec.smoothing * 0.18;
+
+  // Rounding the outline is a blur of the distance field: it pulls convex
+  // corners in and pushes concave ones out equally, the way offsetting out
+  // and back in again does, so the shape stays centred on the artwork.
+  // The radius has to be converted into traced pixels, or the same slider
+  // value would round a small sticker far more than a large one.
+  const roundPx = spec.shape === "rounded" ? Math.max(1, spec.roundMm * k) : 0;
+  const field: Sdf = roundPx > 0 ? roundField(art.sdf, roundPx) : art.sdf;
   const shadowPadMm = spec.shadow && !flat ? Math.max(1.5, spec.widthMm * 0.05) : 0;
   const padWork = bleedWork + shadowPadMm * k;
 
