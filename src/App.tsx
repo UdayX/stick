@@ -1,7 +1,9 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { loadArtwork, type Artwork } from "./lib/artwork";
 import {
-  buildSticker, rasterise, svgDataUri, DEFAULT_SPEC, maxBorderMm, maxBleedMm,
+  buildSticker, computeGeometry, renderSticker, rasterise, svgDataUri,
+  DEFAULT_SPEC, clampSpec, scaleToWidth, maxBorderMm, maxBleedMm, maxRoundMm,
+  MIN_WIDTH_MM, MAX_WIDTH_MM,
   type StickerSpec, type ShapeMode,
 } from "./lib/build";
 import { FINISHES, finishById } from "./lib/finishes";
@@ -37,23 +39,20 @@ export default function App() {
   const [dpi, setDpi] = useState(300);
   const [loadId, setLoadId] = useState(0);
   const fileInput = useRef<HTMLInputElement>(null);
+  const stage = useRef<HTMLElement>(null);
+  const tilt = useRef<HTMLDivElement>(null);
 
+  // Every change goes through the same clamp, so no control can be left
+  // holding a value that another control has since made impossible.
   const set = <K extends keyof StickerSpec>(key: K) => (v: StickerSpec[K]) =>
-    setSpec((s) => ({ ...s, [key]: v }));
+    setSpec((s) => clampSpec({ ...s, [key]: v }));
 
-  // Border and bleed are capped against the width, so shrinking the sticker
-  // has to pull them down with it rather than leave an impossible value.
-  const setWidth = (widthMm: number) =>
-    setSpec((s) => ({
-      ...s,
-      widthMm,
-      borderMm: Math.min(s.borderMm, maxBorderMm(widthMm)),
-      bleedMm: Math.min(s.bleedMm, maxBleedMm(widthMm)),
-    }));
+  // Resizing is a scale, not a redesign: see scaleToWidth.
+  const setWidth = (widthMm: number) => setSpec((s) => scaleToWidth(s, widthMm));
 
   // Picking a finish brings its own edge colour, the way choosing a stock does.
   const setFinish = (id: StickerSpec["finish"]) =>
-    setSpec((s) => ({ ...s, finish: id, borderColor: finishById(id).border }));
+    setSpec((s) => clampSpec({ ...s, finish: id, borderColor: finishById(id).border }));
 
   // One transient message channel; it clears itself so nothing piles up.
   useEffect(() => {
@@ -106,11 +105,94 @@ export default function App() {
     };
   }, [open]);
 
+  // A sticker is a physical thing, so it leans a little towards the pointer.
+  // Written straight to the element: putting a pointer position through state
+  // would re-render the whole tree on every mouse move.
+  useEffect(() => {
+    const host = stage.current;
+    if (!host || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+    let frame = 0;
+    const move = (e: PointerEvent) => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const el = tilt.current;
+        if (!el) return;
+        const r = host.getBoundingClientRect();
+        const dx = (e.clientX - (r.left + r.width / 2)) / (r.width / 2);
+        const dy = (e.clientY - (r.top + r.height / 2)) / (r.height / 2);
+        const clamp = (v: number) => Math.max(-1, Math.min(1, v));
+        el.style.transform =
+          `perspective(900px) rotateY(${(clamp(dx) * 7).toFixed(2)}deg) rotateX(${(-clamp(dy) * 7).toFixed(2)}deg)`;
+      });
+    };
+    const reset = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      if (tilt.current) tilt.current.style.transform = "";
+    };
+    host.addEventListener("pointermove", move);
+    host.addEventListener("pointerleave", reset);
+    return () => {
+      host.removeEventListener("pointermove", move);
+      host.removeEventListener("pointerleave", reset);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [art]);
+
   // Tracing is the expensive step, so the preview trails the controls instead
   // of blocking the slider that is being dragged.
   const liveSpec = useDeferredValue(spec);
-  const web = useMemo(() => (art ? buildSticker(art, liveSpec, "web") : null), [art, liveSpec]);
-  const print = useMemo(() => (art ? buildSticker(art, liveSpec, "print") : null), [art, liveSpec]);
+
+  // Tracing only depends on the shape and the measurements, so changing
+  // finish, angle or strength re-paints without re-tracing.
+  const geo = useMemo(
+    () => (art ? computeGeometry(art, liveSpec, false) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [art, liveSpec.shape, liveSpec.widthMm, liveSpec.borderMm, liveSpec.bleedMm,
+     liveSpec.roundMm, liveSpec.solid, liveSpec.smoothing, liveSpec.shadow],
+  );
+  const web = useMemo(() => (geo ? renderSticker(geo, liveSpec, "web") : null), [geo, liveSpec]);
+
+  // The finish previews all share one trace: only the finish differs between
+  // them, and tracing thirteen times per keystroke would be absurd. They also
+  // use a fixed thumbnail size rather than the live one, so dragging the size
+  // sliders never re-traces them - a preview chip has no real-world size.
+  const swatchSpec = useMemo(
+    () => ({
+      ...DEFAULT_SPEC,
+      shape: liveSpec.shape,
+      solid: liveSpec.solid,
+      smoothing: liveSpec.smoothing,
+      // A fat border on a small chip: the material lives on the border, so
+      // this is what makes one finish tell apart from another at this size.
+      widthMm: 40,
+      borderMm: 8,
+      bleedMm: 0,
+      roundMm: liveSpec.roundMm,
+      shadow: false,
+      animate: false,
+    }),
+    [liveSpec.shape, liveSpec.solid, liveSpec.smoothing, liveSpec.roundMm],
+  );
+  const swatchGeo = useMemo(
+    () => (art ? computeGeometry(art, swatchSpec, true) : null),
+    [art, swatchSpec],
+  );
+  const swatches = useMemo(() => {
+    if (!swatchGeo?.cut) return null;
+    const out: Record<string, string> = {};
+    for (const f of FINISHES) {
+      out[f.id] = renderSticker(
+        swatchGeo,
+        { ...swatchSpec, finish: f.id, borderColor: f.border },
+        "flat",
+        `sw${f.id}`,
+      ).svg;
+    }
+    return out;
+  }, [swatchGeo, swatchSpec]);
 
   const copy = async (text: string, what: string) => {
     try {
@@ -122,12 +204,19 @@ export default function App() {
   };
 
   const save = async () => {
-    if (!web || !print) return;
+    if (!web || !art) return;
     if (format === "png") {
       setBusy(true);
       try {
-        download(await rasterise(web.svg, web.widthMm, web.heightMm, dpi), `${name}-${spec.finish}-${dpi}dpi.png`);
-        setNote({ text: `PNG saved at ${dpi} DPI.` });
+        const r = await rasterise(web.svg, web.widthMm, web.heightMm, dpi);
+        download(r.blob, `${name}-${spec.finish}-${r.dpi}dpi.png`);
+        setNote({
+          text:
+            r.dpi < dpi
+              ? `PNG saved at ${r.dpi} DPI — ${dpi} DPI at this size is past what the browser can rasterise.`
+              : `PNG saved at ${dpi} DPI, ${r.width} × ${r.height} px.`,
+          bad: r.dpi < dpi,
+        });
       } catch (e) {
         setNote({ text: e instanceof Error ? e.message : "The PNG could not be written.", bad: true });
       } finally {
@@ -135,7 +224,7 @@ export default function App() {
       }
       return;
     }
-    const target = format === "print" ? print : web;
+    const target = format === "print" ? buildSticker(art, liveSpec, "print") : web;
     download(new Blob([target.svg], { type: "image/svg+xml" }), `${name}-${spec.finish}-${format}.svg`);
     setNote({ text: `${format === "print" ? "Print" : "Web"} SVG saved.` });
   };
@@ -149,9 +238,14 @@ export default function App() {
   return (
     <div className="flex min-h-dvh flex-col lg:h-dvh lg:flex-row-reverse lg:overflow-hidden">
       <aside className="w-full shrink-0 overflow-y-auto border-line bg-surface lg:w-[360px] lg:border-l">
-        <header className="px-6 pt-8 pb-7">
-          <h1 className="text-[15px] font-semibold tracking-[0.18em]">STICK</h1>
-          <p className="mt-2 max-w-[30ch] text-[13px] leading-relaxed text-muted">
+        <header className="px-6 pt-9 pb-8">
+          <h1 className="flex items-baseline gap-2 text-[34px] leading-none font-semibold tracking-[-0.04em]">
+            STICK
+            <span aria-hidden="true" className="text-[11px] font-medium tracking-[0.22em] text-muted">
+              ⌁ PEEL
+            </span>
+          </h1>
+          <p className="mt-3 max-w-[30ch] text-[13px] leading-relaxed text-muted">
             Artwork in, die-cut sticker out. Print and web ready, no Illustrator.
           </p>
         </header>
@@ -176,7 +270,7 @@ export default function App() {
         </div>
 
         {/* Nothing below appears until there is artwork to act on. */}
-        {art && web && print && (
+        {art && web && (
           <div className="lift">
             <Section title="Finish" defaultOpen hint={finish.label}>
               <div role="radiogroup" aria-label="Sticker finish" className="grid grid-cols-3 gap-2.5">
@@ -193,11 +287,21 @@ export default function App() {
                         on ? "border-ink" : "border-line hover:border-line-strong"
                       }`}
                     >
-                      <span
-                        className="checker block h-11 w-full rounded"
-                        style={{ backgroundImage: f.swatch }}
-                        aria-hidden="true"
-                      />
+                      {swatches?.[f.id] ? (
+                        /* The preview is the real sticker, in that finish:
+                           far more use than an abstract gradient chip. */
+                        <span
+                          className="checker flex h-14 w-full items-center justify-center overflow-hidden rounded [&>svg]:h-[88%] [&>svg]:w-auto [&>svg]:max-w-[88%]"
+                          aria-hidden="true"
+                          dangerouslySetInnerHTML={{ __html: swatches[f.id] }}
+                        />
+                      ) : (
+                        <span
+                          className="checker block h-14 w-full rounded"
+                          style={{ backgroundImage: f.swatch }}
+                          aria-hidden="true"
+                        />
+                      )}
                       <span className="mt-2 mb-0.5 block text-[11px] leading-tight text-muted group-aria-checked:text-ink">
                         {f.label}
                       </span>
@@ -232,7 +336,7 @@ export default function App() {
                 {SHAPES.find((sh) => sh.id === spec.shape)!.hint}
               </p>
 
-              <Slider label="Sticker width" value={spec.widthMm} min={15} max={200} unit=" mm" onChange={setWidth} />
+              <Slider label="Sticker width" value={spec.widthMm} min={MIN_WIDTH_MM} max={MAX_WIDTH_MM} unit=" mm" onChange={setWidth} />
               <Slider
                 label="Border"
                 value={spec.borderMm}
@@ -247,7 +351,7 @@ export default function App() {
                   label="Corner rounding"
                   value={spec.roundMm}
                   min={0}
-                  max={Math.max(1, Math.round(spec.widthMm / 6))}
+                  max={maxRoundMm(spec.widthMm, spec.borderMm, spec.shape)}
                   step={0.25}
                   unit=" mm"
                   onChange={set("roundMm")}
@@ -353,12 +457,12 @@ export default function App() {
         )}
       </aside>
 
-      <main className="relative flex min-h-[55vh] flex-1 items-center justify-center p-8 lg:min-h-0 lg:p-16">
+      <main ref={stage} className="relative flex min-h-[55vh] flex-1 items-center justify-center p-8 lg:min-h-0 lg:p-16">
         <div className="checker absolute inset-6 rounded-xl border border-line bg-surface/40" aria-hidden="true" />
 
         {art && web?.svg ? (
           <figure key={loadId} className="rise relative flex w-full max-w-xl flex-col items-center gap-8">
-            <div className="relative w-full">
+            <div ref={tilt} className="relative w-full transition-transform duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] will-change-transform">
               <div
                 className="[&>svg]:mx-auto [&>svg]:max-h-[62vh] [&>svg]:w-auto [&>svg]:max-w-full"
                 /* Uploaded SVG is sanitised in artwork.ts before it gets here. */
@@ -388,7 +492,7 @@ export default function App() {
         ) : (
           <div className="relative max-w-sm text-center">
             <p className="text-2xl leading-tight font-semibold tracking-tight">
-              {busy ? "Tracing the outline" : "Drop artwork anywhere"}
+              {busy ? "Tracing the outline" : "Throw some artwork in here"}
             </p>
             <p className="mx-auto mt-4 max-w-[32ch] text-[13px] leading-relaxed text-muted">
               An SVG or a PNG. Transparent or flat-backed, both work. Nothing leaves this tab.

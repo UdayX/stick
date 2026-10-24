@@ -20,7 +20,7 @@
  *           magenta, which is what cutting plotters look for.
  */
 import type { Artwork } from "./artwork.ts";
-import { contourPath, radialExtent, roundField, type Sdf } from "./trace.ts";
+import { contourPath, radialExtent, roundField, type Region, type Sdf } from "./trace.ts";
 import { renderFinish, finishById, type FinishId } from "./finishes.ts";
 
 /** How the die line relates to the artwork. */
@@ -74,6 +74,85 @@ export const maxBorderMm = (widthMm: number) => Math.round(widthMm * 0.2 * 4) / 
 /** Printers ask for 1-2 mm; the cap only stops absurd values on tiny stickers. */
 export const maxBleedMm = (widthMm: number) => Math.min(5, Math.round(widthMm * 0.08 * 4) / 4);
 
+export const MIN_WIDTH_MM = 15;
+export const MAX_WIDTH_MM = 200;
+
+/**
+ * Corner rounding is capped against the artwork rather than the sticker.
+ * Rounding is a physical radius, so on a 15 mm sticker the artwork is only
+ * 9 mm across and a 1.5 mm radius would round the drawing away entirely.
+ * A square's corners are a different thing - that radius is a property of the
+ * rectangle, so it can go much further before it stops being a shape.
+ */
+export function maxRoundMm(widthMm: number, borderMm: number, shape: ShapeMode) {
+  if (shape === "square") return Math.max(0.5, Math.round(widthMm * 0.25 * 4) / 4);
+  const artMm = Math.max(1, widthMm - borderMm * 2);
+  return Math.max(0.25, Math.round(artMm * 0.06 * 4) / 4);
+}
+
+const clamp = (v: number, lo: number, hi: number) =>
+  Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : lo;
+
+/**
+ * Resize as a pure scale.
+ *
+ * The border, bleed and rounding are physical measurements, so holding them
+ * fixed while the sticker shrinks makes them proportionally huge - a 3 mm
+ * border on a 15 mm sticker is a third of the artwork, and offsetting by that
+ * much fills in every concavity and turns a drawing into a blob. Scaling them
+ * with the width keeps the sticker looking like itself at any size.
+ */
+export function scaleToWidth(spec: StickerSpec, widthMm: number): StickerSpec {
+  const f = widthMm / spec.widthMm;
+  const q = (v: number) => Math.round(v * f * 4) / 4;
+  return clampSpec({
+    ...spec,
+    widthMm,
+    borderMm: q(spec.borderMm),
+    bleedMm: q(spec.bleedMm),
+    roundMm: q(spec.roundMm),
+  });
+}
+
+/**
+ * Every control's limits depend on the others, so they are enforced in one
+ * place and applied after any change. Shrinking the sticker has to pull the
+ * border, bleed and rounding down with it rather than leave a value that no
+ * longer makes sense.
+ */
+export function clampSpec(spec: StickerSpec): StickerSpec {
+  const widthMm = clamp(spec.widthMm, MIN_WIDTH_MM, MAX_WIDTH_MM);
+  const borderMm = clamp(spec.borderMm, 0, maxBorderMm(widthMm));
+  return {
+    ...spec,
+    widthMm,
+    borderMm,
+    bleedMm: clamp(spec.bleedMm, 0, maxBleedMm(widthMm)),
+    roundMm: clamp(spec.roundMm, 0, maxRoundMm(widthMm, borderMm, spec.shape)),
+    smoothing: clamp(spec.smoothing, 0, 3),
+    intensity: clamp(spec.intensity, 0, 1),
+    angle: ((spec.angle % 360) + 360) % 360,
+  };
+}
+
+/**
+ * Everything about a sticker that does not depend on the finish: the die
+ * line, the bleed shape, the artwork silhouette and where the artwork sits.
+ * Tracing is the expensive step, so this is computed once and reused for
+ * every finish shown at the same size.
+ */
+export type Geometry = {
+  cut: string;
+  bleedShape: string;
+  artShape: string;
+  artLayer: string;
+  widthMm: number;
+  heightMm: number;
+  cutWidthMm: number;
+  cutHeightMm: number;
+  warning?: string;
+};
+
 export type BuiltSticker = {
   svg: string;
   cutPath: string;
@@ -87,6 +166,33 @@ export type BuiltSticker = {
 };
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * The artwork silhouette depends only on the artwork and the simplification
+ * tolerance, never on the size, border or shape, so it survives every slider
+ * drag that is not the smoothing one. Keyed weakly on the field itself.
+ */
+const silhouettes = new WeakMap<Sdf, Map<string, string>>();
+function artSilhouette(
+  sdf: Sdf,
+  tol: number,
+  toMm: { scale: number; originX: number; originY: number },
+  region: Region,
+) {
+  const key = `${tol.toFixed(3)}|${toMm.scale.toFixed(5)}|${toMm.originX.toFixed(3)}|${toMm.originY.toFixed(3)}`;
+  let cache = silhouettes.get(sdf);
+  if (!cache) {
+    cache = new Map();
+    silhouettes.set(sdf, cache);
+  }
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
+  const out = contourPath(sdf, { offset: -1, tolerance: tol, region, ...toMm });
+  // The key includes the placement, so a handful of entries covers a drag.
+  if (cache.size > 24) cache.clear();
+  cache.set(key, out);
+  return out;
+}
 
 /** Rounded rectangle as a path, clamped so the radius cannot self-intersect. */
 function roundedRect(x: number, y: number, w: number, h: number, r: number) {
@@ -105,8 +211,7 @@ function circlePath(cx: number, cy: number, r: number) {
   return `M${C - R} ${D}a${R} ${R} 0 1 0 ${R * 2} 0a${R} ${R} 0 1 0 ${-R * 2} 0Z`;
 }
 
-export function buildSticker(art: Artwork, spec: StickerSpec, mode: "web" | "print"): BuiltSticker {
-  const flat = mode === "print";
+export function computeGeometry(art: Artwork, spec: StickerSpec, flat: boolean): Geometry {
   const b = art.bounds;
 
   const radial = spec.shape === "circle" ? radialExtent(art.sdf) : null;
@@ -139,6 +244,7 @@ export function buildSticker(art: Artwork, spec: StickerSpec, mode: "web" | "pri
   // value would round a small sticker far more than a large one.
   const roundPx = spec.shape === "rounded" ? Math.max(1, spec.roundMm * k) : 0;
   const field: Sdf = roundPx > 0 ? roundField(art.sdf, roundPx) : art.sdf;
+
   const shadowPadMm = spec.shadow && !flat ? Math.max(1.5, spec.widthMm * 0.05) : 0;
   const padWork = bleedWork + shadowPadMm * k;
 
@@ -149,11 +255,17 @@ export function buildSticker(art: Artwork, spec: StickerSpec, mode: "web" | "pri
   const boxH = radial ? radial.radius * 2 : b.h;
   const vx = boxX - padWork;
   const vy = boxY - padWork;
-  const wMm = r2((boxW + padWork * 2) / k);
-  const hMm = r2((boxH + padWork * 2) / k);
+  const widthMm = r2((boxW + padWork * 2) / k);
+  const heightMm = r2((boxH + padWork * 2) / k);
 
   const toMm = { scale: 1 / k, originX: -vx / k, originY: -vy / k };
   const mm = (px: number) => px / k;
+
+  /** The contour at `offset` can only run within that far of the artwork. */
+  const regionFor = (offsetWork: number) => {
+    const pad = Math.abs(offsetWork) + 4;
+    return { x0: b.x - pad, y0: b.y - pad, x1: b.x + b.w + pad, y1: b.y + b.h + pad };
+  };
 
   /** The die line at a given offset, in millimetres. */
   const shapeAt = (offsetWork: number): string => {
@@ -169,21 +281,18 @@ export function buildSticker(art: Artwork, spec: StickerSpec, mode: "web" | "pri
         spec.roundMm,
       );
     }
-    return contourPath(field, { offset: offsetWork, tolerance: tol, solid: spec.solid, ...toMm });
+    return contourPath(field, {
+      offset: offsetWork, tolerance: tol, solid: spec.solid, region: regionFor(offsetWork), ...toMm,
+    });
   };
 
   const cutWidthMm = r2((boxW + borderWork * 2) / k);
   const cutHeightMm = r2((boxH + borderWork * 2) / k);
-
   const cut = shapeAt(borderWork);
   if (!cut) {
     return {
-      svg: "",
-      cutPath: "",
-      widthMm: spec.widthMm,
-      heightMm: spec.widthMm,
-      cutWidthMm,
-      cutHeightMm,
+      cut: "", bleedShape: "", artShape: "", artLayer: "",
+      widthMm, heightMm, cutWidthMm, cutHeightMm,
       warning: "No shape found — the upload looks empty or fully transparent.",
     };
   }
@@ -191,20 +300,7 @@ export function buildSticker(art: Artwork, spec: StickerSpec, mode: "web" | "pri
 
   // The artwork silhouette, tucked a hair inside its own edge so the mask
   // cannot leave a bright halo where it meets the border.
-  const artShape = contourPath(art.sdf, { offset: -1, tolerance: tol, ...toMm });
-
-  const ns = "sf";
-  const finish = renderFinish(spec.finish, {
-    ns,
-    w: wMm,
-    h: hMm,
-    clip: `${ns}-clip`,
-    maskBorder: `${ns}-border`,
-    angle: spec.angle,
-    intensity: spec.intensity,
-    flat,
-    animate: spec.animate && !flat,
-  });
+  const artShape = artSilhouette(art.sdf, tol, toMm, regionFor(1));
 
   // The artwork sits in the middle of the traced canvas, inset by the blank
   // margin that offsetting needs. Mapping it to the whole canvas instead
@@ -227,6 +323,46 @@ export function buildSticker(art: Artwork, spec: StickerSpec, mode: "web" | "pri
       art.source.inner +
       `</g>`;
   }
+
+  return { cut, bleedShape, artShape, artLayer, widthMm, heightMm, cutWidthMm, cutHeightMm, warning };
+}
+
+/** Paint a finish onto geometry that has already been traced. */
+/**
+ * "web" keeps filters, blend modes and the sheen. "print" is flat and carries
+ * the cut layer. "flat" is the same cheap rendering as print with no cut
+ * layer and no physical size, for the finish previews.
+ */
+export type RenderMode = "web" | "print" | "flat";
+
+export function renderSticker(
+  geo: Geometry,
+  spec: StickerSpec,
+  mode: RenderMode,
+  /** Id prefix. Several stickers on one page must not share defs. */
+  ns = "sf",
+): BuiltSticker {
+  const flat = mode !== "web";
+  const { cut, bleedShape, artShape, artLayer, widthMm: wMm, heightMm: hMm } = geo;
+
+  if (!cut) {
+    return {
+      svg: "", cutPath: "", widthMm: wMm, heightMm: hMm,
+      cutWidthMm: geo.cutWidthMm, cutHeightMm: geo.cutHeightMm, warning: geo.warning,
+    };
+  }
+
+  const finish = renderFinish(spec.finish, {
+    ns,
+    w: wMm,
+    h: hMm,
+    clip: `${ns}-clip`,
+    maskBorder: `${ns}-border`,
+    angle: spec.angle,
+    intensity: spec.intensity,
+    flat,
+    animate: spec.animate && !flat,
+  });
 
   const baseFill = spec.finish === "clear" ? "none" : spec.borderColor;
   const shadowId = `${ns}-shadow`;
@@ -259,25 +395,38 @@ export function buildSticker(art: Artwork, spec: StickerSpec, mode: "web" | "pri
     `</g>`,
   ].join("");
 
-  const cutLayer = flat
+  const cutLayer = mode === "print"
     ? `<g id="CutContour" inkscape:label="CutContour" inkscape:groupmode="layer">` +
       `<desc>Die-cut line. Spot colour: CutContour, 100% magenta, stroke only.</desc>` +
       `<path d="${cut}" fill="none" stroke="#FF00FF" stroke-width="0.25" fill-rule="evenodd"/>` +
       `</g>`
     : "";
 
-  const sizeAttrs = flat ? ` width="${wMm}mm" height="${hMm}mm"` : "";
+  const sizeAttrs = mode === "print" ? ` width="${wMm}mm" height="${hMm}mm"` : "";
   const style = finish.css ? `<style>${finish.css}</style>` : "";
-  const nsAttr = flat ? ` xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"` : "";
+  const nsAttr = mode === "print" ? ` xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"` : "";
 
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg"${nsAttr}${sizeAttrs} viewBox="0 0 ${wMm} ${hMm}" role="img" aria-label="Die-cut ${finishById(spec.finish).label.toLowerCase()} sticker">` +
-    (flat
+    (mode === "print"
       ? `<desc>Print-ready die-cut sticker. Cut size ${r2(spec.widthMm)}mm wide, ${spec.bleedMm}mm bleed. Cut line on the CutContour layer.</desc>`
       : "") +
     `<defs>${defs}</defs>${style}${body}${cutLayer}</svg>`;
 
-  return { svg, cutPath: cut, widthMm: wMm, heightMm: hMm, cutWidthMm, cutHeightMm, warning };
+  return {
+    svg, cutPath: cut, widthMm: wMm, heightMm: hMm,
+    cutWidthMm: geo.cutWidthMm, cutHeightMm: geo.cutHeightMm, warning: geo.warning,
+  };
+}
+
+/** Trace and paint in one go. */
+export function buildSticker(
+  art: Artwork,
+  spec: StickerSpec,
+  mode: RenderMode,
+  ns?: string,
+): BuiltSticker {
+  return renderSticker(computeGeometry(art, spec, mode !== "web"), spec, mode, ns);
 }
 
 /** SVG as a data URI, ready to drop into `background-image` or an `<img>`. */
@@ -285,11 +434,34 @@ export function svgDataUri(svg: string) {
   return `data:image/svg+xml,${encodeURIComponent(svg).replace(/'/g, "%27").replace(/"/g, "%22")}`;
 }
 
-/** Rasterise a built SVG at a print resolution. */
-export async function rasterise(svg: string, widthMm: number, heightMm: number, dpi: number) {
-  const px = (v: number) => Math.max(1, Math.round((v / 25.4) * dpi));
-  const w = px(widthMm);
-  const h = px(heightMm);
+/**
+ * Largest canvas the browser will actually paint. Safari caps the total area
+ * at roughly 16.8 million pixels and every engine caps a single dimension;
+ * going over does not throw, it just hands back a blank bitmap. A 200 mm
+ * sticker at 600 DPI is 22 million pixels, so this is reachable in normal use.
+ */
+const MAX_CANVAS_SIDE = 8192;
+const MAX_CANVAS_AREA = 16_000_000;
+
+export type Raster = { blob: Blob; width: number; height: number; dpi: number };
+
+/** Rasterise a built SVG at a print resolution, or the closest one that fits. */
+export async function rasterise(
+  svg: string,
+  widthMm: number,
+  heightMm: number,
+  dpi: number,
+): Promise<Raster> {
+  const wantW = (widthMm / 25.4) * dpi;
+  const wantH = (heightMm / 25.4) * dpi;
+  const fit = Math.min(
+    1,
+    MAX_CANVAS_SIDE / Math.max(wantW, wantH),
+    Math.sqrt(MAX_CANVAS_AREA / (wantW * wantH)),
+  );
+  const actualDpi = Math.floor(dpi * fit);
+  const w = Math.max(1, Math.round(wantW * fit));
+  const h = Math.max(1, Math.round(wantH * fit));
   const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
   try {
     const img = await new Promise<HTMLImageElement>((res, rej) => {
@@ -302,9 +474,10 @@ export async function rasterise(svg: string, widthMm: number, heightMm: number, 
     cv.width = w;
     cv.height = h;
     cv.getContext("2d")!.drawImage(img, 0, 0, w, h);
-    return await new Promise<Blob>((res, rej) =>
+    const blob = await new Promise<Blob>((res, rej) =>
       cv.toBlob((bl) => (bl ? res(bl) : rej(new Error("Could not encode the PNG."))), "image/png"),
     );
+    return { blob, width: w, height: h, dpi: actualDpi };
   } finally {
     URL.revokeObjectURL(url);
   }

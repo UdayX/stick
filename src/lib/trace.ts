@@ -82,8 +82,10 @@ export function buildSdf(alpha: Uint8ClampedArray, w: number, h: number, thresho
   return { field, w, h };
 }
 
+export type Region = { x0: number; y0: number; x1: number; y1: number };
+
 /** Marching squares at `level`, with linear interpolation along cell edges. */
-function isoSegments(sdf: Sdf, level: number): [Pt, Pt][] {
+function isoSegments(sdf: Sdf, level: number, region?: Region): [Pt, Pt][] {
   const { field, w, h } = sdf;
   const at = (x: number, y: number) => {
     // Clamp-sample so artwork touching the canvas edge still closes its loop.
@@ -100,8 +102,15 @@ function isoSegments(sdf: Sdf, level: number): [Pt, Pt][] {
   };
 
   // Pad by one cell so shapes running off-canvas still produce closed loops.
-  for (let y = -1; y < h; y++) {
-    for (let x = -1; x < w; x++) {
+  // A region keeps the scan near the artwork: the contour can only run within
+  // the offset distance of it, and the blank margin around it is most of the
+  // canvas.
+  const y0 = Math.max(-1, region ? Math.floor(region.y0) : -1);
+  const y1 = Math.min(h, region ? Math.ceil(region.y1) : h);
+  const x0 = Math.max(-1, region ? Math.floor(region.x0) : -1);
+  const x1 = Math.min(w, region ? Math.ceil(region.x1) : w);
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
       const va = at(x, y);
       const vb = at(x + 1, y);
       const vc = at(x + 1, y + 1);
@@ -144,7 +153,11 @@ function isoSegments(sdf: Sdf, level: number): [Pt, Pt][] {
 
 /** Stitch unordered segments into closed loops by matching endpoints. */
 function stitch(segs: [Pt, Pt][]): Loop[] {
-  const key = (p: Pt) => `${Math.round(p.x * 128)},${Math.round(p.y * 128)}`;
+  // Endpoints are matched on a fixed sub-pixel grid; 1/128 px is far finer
+  // than the interpolation error and coarse enough that the two ends of a
+  // shared edge always land in the same bucket.
+  const JOIN_GRID = 128;
+  const key = (p: Pt) => `${Math.round(p.x * JOIN_GRID)},${Math.round(p.y * JOIN_GRID)}`;
   const buckets = new Map<string, number[]>();
   segs.forEach((s, i) => {
     for (const p of s) {
@@ -235,6 +248,8 @@ function area(loop: Loop): number {
  */
 function loopToPath(loop: Loop, scale: number, ox: number, oy: number): string {
   const n = loop.length;
+  // Three decimals of a millimetre is a micron: far below what any cutter
+  // resolves, and it keeps the path string small.
   const f = (v: number) => Math.round(v * 1000) / 1000;
   const P = (i: number) => loop[((i % n) + n) % n];
   const sx = (p: Pt) => f(p.x * scale + ox);
@@ -318,6 +333,8 @@ export type ContourOpts = {
   scale?: number;
   originX?: number;
   originY?: number;
+  /** Limit the scan to this part of the field. Must contain the whole contour. */
+  region?: Region;
   /**
    * Fill holes: keep the outer loop of every piece and drop the loops nested
    * inside them. Separate pieces all survive — only holes are closed.
@@ -332,7 +349,7 @@ export type ContourOpts = {
  */
 export function contourPath(sdf: Sdf, opts: ContourOpts): string {
   const { offset, tolerance = 0.25, minArea = 12, scale = 1, originX = 0, originY = 0 } = opts;
-  let loops = stitch(isoSegments(sdf, offset)).filter((l) => area(l) >= minArea);
+  let loops = stitch(isoSegments(sdf, offset, opts.region)).filter((l) => area(l) >= minArea);
   if (!loops.length) return "";
   if (opts.solid) {
     // A loop nested an odd number of deep is a hole in the piece around it.

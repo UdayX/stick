@@ -4,8 +4,11 @@
  * back from the printer the size it was asked for.
  */
 import assert from "node:assert/strict";
-import { buildSdf } from "./trace.ts";
-import { buildSticker, DEFAULT_SPEC, maxBorderMm, maxBleedMm } from "./build.ts";
+import { buildSdf, roundField } from "./trace.ts";
+import {
+  buildSticker, clampSpec, scaleToWidth, DEFAULT_SPEC, maxBorderMm, maxBleedMm, maxRoundMm,
+  MIN_WIDTH_MM, MAX_WIDTH_MM, type ShapeMode, type StickerSpec,
+} from "./build.ts";
 import type { Artwork } from "./artwork.ts";
 
 // Mirrors artwork.ts: WORK is the artwork's longest side, MARGIN the blank
@@ -111,6 +114,142 @@ near(soft.cutWidthMm, sharp.cutWidthMm, 2.5, "rounding keeps the width");
   const left = Number(t![1]);
   const right = out.widthMm - (left + 100 * scale);
   near(left, right, 1, "artwork is centred in the sticker");
+}
+
+// A small star: detailed enough that an over-aggressive setting visibly
+// destroys it, small enough to sweep a few hundred combinations quickly.
+const S = 200;
+const SM = Math.round(S * 0.55);
+const N = S + SM * 2;
+const c = N / 2;
+const rr = S / 2;
+const a = new Uint8ClampedArray(N * N * 4);
+for (let y = 0; y < N; y++) {
+  for (let x = 0; x < N; x++) {
+    const ang = Math.atan2(y - c, x - c);
+    const lim = rr * (0.5 + 0.5 * Math.abs(Math.cos(ang * 2.5)));
+    if (Math.hypot(x - c, y - c) <= lim) a[(y * N + x) * 4 + 3] = 255;
+  }
+}
+const sdf = roundField(buildSdf(a, N, N), 1);
+const star: Artwork = {
+  source: { kind: "svg", inner: "<path/>", viewBox: { x: 0, y: 0, w: 100, h: 100 } },
+  natW: 100, natH: 100, sdf, workToNat: 100 / S,
+  bounds: { x: c - rr, y: c - rr, w: rr * 2, h: rr * 2 },
+  margin: SM, wasOpaque: false,
+};
+
+
+// Every control, at every extreme, for every shape. A sticker that comes out
+// the wrong size, warns, or loses its outline is a bug no matter how odd the
+// combination of settings looks.
+{
+  const shapes: ShapeMode[] = ["contour", "rounded", "circle", "square"];
+  // Count every path command: the traced shapes are M/C, but a circle is
+  // arcs and a square is H/V/A, so an M-and-C count reads them as degenerate.
+  const anchors = (d: string) => (d.match(/[MCLHVAZ]/gi) ?? []).length;
+  let checked = 0;
+
+  for (const shape of shapes) {
+    for (const widthMm of [MIN_WIDTH_MM, 20, 60, 120, MAX_WIDTH_MM]) {
+      for (const borderFrac of [0, 0.5, 1]) {
+        for (const bleedFrac of [0, 1]) {
+          for (const roundFrac of [0, 1]) {
+            const borderMm = maxBorderMm(widthMm) * borderFrac;
+            const draft: StickerSpec = {
+              ...DEFAULT_SPEC, shape, widthMm, borderMm,
+              bleedMm: maxBleedMm(widthMm) * bleedFrac,
+              roundMm: maxRoundMm(widthMm, borderMm, shape) * roundFrac,
+            };
+            const spec = clampSpec(draft);
+            const where = `${shape} ${widthMm}mm border=${spec.borderMm} bleed=${spec.bleedMm} round=${spec.roundMm}`;
+
+            // Clamping must be a fixed point: applying it twice changes nothing.
+            assert.deepEqual(clampSpec(spec), spec, `clamp is not stable: ${where}`);
+
+            const out = buildSticker(star, spec, "print");
+            assert.ok(!out.warning, `warned: ${where} -> ${out.warning}`);
+            assert.ok(out.cutPath.length > 0, `empty cut: ${where}`);
+            assert.ok(out.svg.length > 0, `empty svg: ${where}`);
+            near(out.cutWidthMm, widthMm, widthMm * 0.06, `cut width: ${where}`);
+
+            assert.ok(anchors(out.cutPath) >= 4, `degenerate outline: ${where}`);
+            checked++;
+          }
+        }
+      }
+    }
+  }
+  console.log(`build.selftest: swept ${checked} parameter combinations`);
+}
+
+// The remaining controls only repaint, but they still must not break the file.
+for (const intensity of [0, 0.5, 1]) {
+  for (const smoothing of [0, 1.5, 3]) {
+    for (const angle of [0, 135, 359]) {
+      const spec = clampSpec({ ...DEFAULT_SPEC, intensity, smoothing, angle });
+      const out = buildSticker(art, spec, "web");
+      assert.ok(!out.warning, `paint controls warned at ${intensity}/${smoothing}/${angle}`);
+      assert.match(out.svg, /<svg[^>]*viewBox=/, `malformed svg at ${intensity}/${smoothing}/${angle}`);
+    }
+  }
+}
+
+// Resizing has to be a pure scale. With the border, bleed and rounding
+// scaled alongside the width, a small sticker must keep the same proportions
+// as a large one - not blob up as the border eats the artwork.
+{
+  /** How much of its own bounding box the cut shape fills. */
+  const fill = (d: string) => {
+    const n = d.match(/-?\d+(\.\d+)?/g)!.map(Number);
+    const pts = [{ x: n[0], y: n[1] }];
+    for (let i = 2; i + 5 < n.length; i += 6) pts.push({ x: n[i + 4], y: n[i + 5] });
+    let A = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      const q = pts[(i + 1) % pts.length];
+      A += p.x * q.y - q.x * p.y;
+    }
+    const xs = pts.map((p) => p.x);
+    const ys = pts.map((p) => p.y);
+    const bb = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys));
+    return Math.abs(A) / 2 / bb;
+  };
+
+  const base = clampSpec({ ...DEFAULT_SPEC, widthMm: 60, borderMm: 3, bleedMm: 1.5, roundMm: 1.5 });
+  const ref = fill(buildSticker(star, base, "print").cutPath);
+  for (const widthMm of [MIN_WIDTH_MM, 25, 120, MAX_WIDTH_MM]) {
+    const f = widthMm / base.widthMm;
+    const scaled = clampSpec({
+      ...base, widthMm,
+      borderMm: base.borderMm * f, bleedMm: base.bleedMm * f, roundMm: base.roundMm * f,
+    });
+    const got = fill(buildSticker(star, scaled, "print").cutPath);
+    assert.ok(
+      Math.abs(got - ref) < 0.06,
+      `resizing changed the sticker's proportions at ${widthMm}mm: fills ${(got * 100).toFixed(1)}% vs ${(ref * 100).toFixed(1)}%`,
+    );
+  }
+
+  // Resizing through scaleToWidth must hold the proportions: the border is
+  // the same share of the sticker at 15mm as it is at 200mm. Without this the
+  // border keeps its millimetres while the artwork shrinks under it.
+  for (const widthMm of [MIN_WIDTH_MM, 25, 120, MAX_WIDTH_MM]) {
+    const out = scaleToWidth(base, widthMm);
+    assert.equal(out.widthMm, widthMm, `scaleToWidth missed the width at ${widthMm}`);
+    const want = base.borderMm / base.widthMm;
+    const got = out.borderMm / out.widthMm;
+    assert.ok(
+      Math.abs(got - want) < 0.02,
+      `border drifted when resizing to ${widthMm}mm: ${(got * 100).toFixed(1)}% of width vs ${(want * 100).toFixed(1)}%`,
+    );
+    // Repeated resizes must not creep away from the proportion either.
+    const round = scaleToWidth(scaleToWidth(out, 60), widthMm);
+    assert.ok(
+      Math.abs(round.borderMm / round.widthMm - want) < 0.03,
+      `border drifted after resizing back and forth at ${widthMm}mm`,
+    );
+  }
 }
 
 console.log("build.selftest: all checks passed");
