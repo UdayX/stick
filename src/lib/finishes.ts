@@ -23,6 +23,7 @@ export type FinishId =
   | "paper"
   | "kraft"
   | "matte"
+  | "matteWhite"
   | "vinyl"
   | "clear";
 
@@ -113,6 +114,13 @@ export const FINISHES: Finish[] = [
     blurb: "Deep matte laminate that swallows light instead of reflecting it.",
     border: "#17181a",
     swatch: "linear-gradient(135deg,#2a2c30,#141517,#232528)",
+  },
+  {
+    id: "matteWhite",
+    label: "Matte white",
+    blurb: "Flat white laminate with a fine tooth and no shine to it.",
+    border: "#fbfbfc",
+    swatch: "linear-gradient(135deg,#ffffff,#e8e9eb,#f6f6f7)",
   },
   {
     id: "vinyl",
@@ -400,7 +408,12 @@ export function renderFinish(id: FinishId, ctx: RenderCtx): FinishLayers {
       over.push(`<g opacity="${(0.5 * intensity).toFixed(2)}"${flat ? "" : ' style="mix-blend-mode:multiply"'}>${full} fill="url(#${ns}-kraftwash)"/></g>`);
       break;
     }
-    case "matte": {
+    case "matte":
+    case "matteWhite": {
+      // One material at opposite ends of the scale. Both flatten the surface
+      // and neither throws a highlight; only the tone and how hard the wash
+      // bites differ.
+      const dark = id === "matte";
       const gid = `${ns}-mattegrain`;
       if (!flat) {
         defs.push(
@@ -409,11 +422,27 @@ export function renderFinish(id: FinishId, ctx: RenderCtx): FinishLayers {
             `<feColorMatrix type="saturate" values="0"/>` +
             `</filter>`,
         );
-        over.push(`<g opacity="${(0.18 * intensity).toFixed(2)}" style="mix-blend-mode:overlay">${full} filter="url(#${gid})"/></g>`);
+        over.push(
+          `<g opacity="${((dark ? 0.18 : 0.26) * intensity).toFixed(2)}" style="mix-blend-mode:overlay">${full} filter="url(#${gid})"/></g>`,
+        );
       }
-      // Matte laminate darkens and flattens; it never throws a highlight.
-      defs.push(gradientStops(`${ns}-mattewash`, angle, [[0, "#3a3d42", 0.4], [1, "#0d0e10", 0.5]]));
-      over.push(`<g mask="url(#${maskBorder})" opacity="${(0.7 * intensity).toFixed(2)}"${flat ? "" : ' style="mix-blend-mode:multiply"'}>${full} fill="url(#${ns}-mattewash)"/></g>`);
+      // Multiplying a near-white wash shades the surface without tinting it,
+      // which is what keeps a white laminate reading as white rather than grey.
+      defs.push(
+        gradientStops(
+          `${ns}-mattewash`,
+          angle,
+          dark
+            ? [[0, "#3a3d42", 0.4], [1, "#0d0e10", 0.5]]
+            // Matte white has to stay clearly apart from glossy vinyl, which
+            // is the same colour with a highlight on it. So: no bright end at
+            // all, and an even fall across the surface instead of a hot band.
+            : [[0, "#f4f5f7", 0.45], [0.5, "#e3e5e9", 0.55], [1, "#c6c9d0", 0.7]],
+        ),
+      );
+      over.push(
+        `<g mask="url(#${maskBorder})" opacity="${((dark ? 0.7 : 0.8) * intensity).toFixed(2)}"${flat ? "" : ' style="mix-blend-mode:multiply"'}>${full} fill="url(#${ns}-mattewash)"/></g>`,
+      );
       break;
     }
     case "paper": {
@@ -460,7 +489,7 @@ export function renderFinish(id: FinishId, ctx: RenderCtx): FinishLayers {
     }
   }
 
-  const flatStock = id === "paper" || id === "kraft" || id === "matte";
+  const flatStock = id === "paper" || id === "kraft" || id === "matte" || id === "matteWhite";
   const r = rim(ctx, flatStock ? 0.09 : 0.16);
   defs.push(r.defs);
   if (r.markup) over.push(r.markup);
